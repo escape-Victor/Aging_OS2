@@ -1,0 +1,175 @@
+# GSE Router — Route configuration
+#
+# Maps biological context to processing method preferences.
+# The route planner uses these as defaults; the agent can override
+# based on specific dataset evidence.
+
+# Reference genome selection
+reference_genomes:
+  human:
+    primary: GRCh38
+    alias: [GRCh38, hg38, Homo_sapiens]
+  mouse:
+    primary: GRCm39
+    alias: [GRCm39, mm39, Mus_musculus]
+  zebrafish:
+    primary: GRCz11
+    alias: [GRCz11, danRer11]
+  # Custom genomes must be provided by the user
+
+# Protocol -> preferred quantification method
+protocols:
+  10x_3p:
+    preferred: cellranger_count
+    fallback: starsolo
+  10x_5p:
+    preferred: cellranger_count
+    fallback: starsolo
+  smart_seq2:
+    preferred: starsolo
+    fallback: kallisto_bustools
+  dropseq:
+    preferred: starsolo
+    fallback: alevin_fry
+  indie_dropseq:
+    preferred: starsolo
+    fallback: alevin_fry
+
+# QC thresholds
+qc:
+  min_cells: 100
+  min_genes_per_cell: 200
+  min_counts_per_cell: 500
+  max_mitochondrial_pct: 20.0
+  max_doublet_score: 0.3
+
+# ---------------------------------------------------------------------------
+# Explicit 8-level routing priority (from GEO examples research)
+#
+# The router MUST prefer higher-priority data when multiple formats exist.
+# FASTQ/SRA is ALWAYS the last resort.
+# ---------------------------------------------------------------------------
+#
+# 1. .h5ad           -> validate/standardize
+# 2. 10x .h5         -> read_10x_h5
+# 3. .loom/.loom.gz  -> read_loom
+# 4. 10x MEX triplet -> read_10x_mtx
+# 5. raw UMI TXT/CSV/RDS matrix -> parse/convert
+# 6. Seurat/SCE .rds -> R bridge conversion
+# 7. normalized matrix only -> mark limited-use
+# 8. FASTQ/SRA       -> avoid unless no processed data exists
+# ---------------------------------------------------------------------------
+
+file_type_priority:
+  h5ad: 0                 # Priority 1
+  10x_h5: 1               # Priority 2
+  loom: 2                 # Priority 3
+  10x_mex: 3              # Priority 4
+  raw_umi_matrix: 4       # Priority 5
+  rds_seurat: 5           # Priority 6
+  sce_rds: 5              # Priority 6
+  h5seurat: 5             # Priority 6
+  csv_matrix: 5           # Priority 6 (ambiguous)
+  normalized_matrix: 6    # Priority 7 — limited use, do NOT treat as counts
+  fastq_paired: 7         # Priority 8 — avoid if any processed data exists
+  fastq_single: 7         # Priority 8
+  # Non-data types
+  metadata: 10
+  annotation: 11
+  bam: 12
+  archive: 50
+  unknown: 99
+
+# ---------------------------------------------------------------------------
+# Environment mapping — which environment each processing method runs in
+# See config/tools.yaml for full tool-to-command mappings
+# ---------------------------------------------------------------------------
+environments:
+  router-core:
+    - probe_metadata
+    - probe_files
+    - classify_files
+    - group_files
+    - build_manifest
+    - plan_route
+    - write_report
+  scrna-python:
+    - read_10x_mtx_to_h5ad
+    - read_10x_h5_to_h5ad
+    - read_loom_to_h5ad
+    - read_h5ad_validate
+    - read_raw_umi_matrix_to_h5ad
+    - read_normalized_matrix_to_h5ad
+    - read_csv_matrix_to_h5ad
+    - validate_h5ad
+    - merge_cell_metadata
+    - merge_gene_metadata
+  r-converters:
+    enabled: false             # Only when .rds detected
+    - read_rds_seurat_to_h5ad
+    - read_rds_sce_to_h5ad
+    - read_h5seurat_to_h5ad
+  raw-pipeline:
+    enabled: false             # Only as last resort
+    - fasterq_dump
+    - cellranger_count
+    - starsolo
+    - nfcore_scrnaseq
+rules:
+  # CARDINAL RULE: RAW.tar does NOT mean FASTQ.
+  # Many GEO RAW.tar files contain processed matrices, .loom, .h5ad, or metadata.
+  # Always check filelist.txt or FTP index before downloading.
+  raw_tar_inspection: true
+
+  # If ANY usable processed count/object file exists (priority 1-6),
+  # do NOT run FASTQ/SRA processing by default. Only fall back to FASTQ
+  # if ALL higher-priority routes fail.
+  skip_fastq_if_processed_exists: true
+
+  # Never treat normalized expression (TPM, FPKM, log-normalized) as raw counts.
+  # Store normalized data in layers['normalized'], NOT layers['counts'].
+  # Mark output as limited-use when raw counts are unavailable.
+  normalized_is_not_counts: true
+
+  # Preserve raw counts in AnnData.layers['counts'] when available.
+  preserve_raw_counts: true
+
+  # Species -> reference genome
+  # Protocol -> pipeline choice
+  # Tissue -> expected cell types and QC thresholds
+
+# Route confidence thresholds
+confidence:
+  auto_process_min: 0.70    # Process automatically if >= this
+  warn_threshold: 0.85       # Warn if below this
+  reject_threshold: 0.40     # Reject (manual review) if below this
+
+# ---------------------------------------------------------------------------
+# Feasibility tiers (with required environments)
+# ---------------------------------------------------------------------------
+feasibility:
+  high:
+    env: scrna-python          # All high-tier routes use scrna-python
+    routes:
+      - "10x MEX -> h5ad"
+      - "10x H5 -> h5ad"
+      - "Existing h5ad -> validate"
+      - "Loom -> h5ad"
+      - "CSV/TSV -> h5ad"
+  medium:
+    env: r-converters          # R bridge needed
+    routes:
+      - "RDS/Seurat/SCE -> h5ad (needs R bridge)"
+      - "Raw UMI RDS -> h5ad (needs R bridge)"
+  medium_hard:
+    env: raw-pipeline          # Disabled by default
+    routes:
+      - "FASTQ/SRA -> h5ad (needs reference, compute, Cell Ranger/STARsolo/nf-core)"
+  hard:
+    env: router-core           # Metadata inference is a core concern
+    routes:
+      - "Automatic biological group inference from GEO text"
+  very_hard:
+    env: all                   # Needs everything, plus human review
+    routes:
+      - "Fully automatic processing of every GSE without manual review"

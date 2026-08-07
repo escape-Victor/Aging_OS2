@@ -1,0 +1,112 @@
+# =============================================================================
+# Environment layers:
+#   router-core   — this package (always installed)
+#   scrna-python  — anndata, scanpy, h5py, loompy (separate micromamba env)
+#   r-converters  — R/Seurat/SeuratDisk (separate micromamba env, WSL2)
+#   raw-pipeline  — nextflow/nf-core (separate micromamba env, WSL2, disabled)
+#
+# Only router-core is installed via pip. Other layers are managed by micromamba
+# and configured in config/tools.yaml. See docs/architecture.md for details.
+# =============================================================================
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gse-router"
+version = "0.1.0"
+description = "Smart routing proxy for converting GEO single-cell RNA-seq datasets to standardized AnnData objects"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "GSE Router Team"}
+]
+keywords = ["single-cell", "RNA-seq", "GEO", "bioinformatics", "AnnData"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+# ---------------------------------------------------------------------------
+# router-core dependencies (this package — lightweight, always installed)
+# Covers: metadata probing, file inspection, JSON manifests, routing logic
+# ---------------------------------------------------------------------------
+dependencies = [
+    "pydantic>=2.0",
+    "click>=8.0",
+    "structlog>=24.0",
+    "httpx>=0.25",
+    "pyyaml>=6.0",
+    "pandas>=2.0",
+    "jsonschema>=4.20",
+]
+
+# ---------------------------------------------------------------------------
+# Optional dependency groups — for reference/documentation only.
+# These are NOT installed via pip; they live in separate micromamba envs.
+# See config/tools.yaml for the canonical environment definitions.
+# ---------------------------------------------------------------------------
+[project.optional-dependencies]
+
+# scrna-python env (micromamba): anndata, scanpy, scipy, numpy, h5py, loompy
+# Used by: convert_10x_mtx_to_h5ad, convert_10x_h5_to_h5ad, convert_loom_to_h5ad,
+#          read_h5ad_validate, convert_csv_matrix_to_h5ad, validate_h5ad,
+#          merge_cell_metadata, merge_gene_metadata
+scrna-python = [
+    "anndata>=0.10",
+    "scanpy>=1.10",
+    "scipy>=1.12",
+    "numpy>=1.24",
+    "h5py>=3.10",
+    "loompy>=3.0",
+]
+
+# r-converters env (micromamba, WSL2): R, Seurat, SeuratDisk, SingleCellExperiment, zellkonverter
+# Used by: convert_rds_seurat_to_h5ad, convert_rds_sce_to_h5ad, convert_h5seurat_to_h5ad
+# NOTE: Not pip-installable. Managed entirely via micromamba + R.
+
+# raw-pipeline env (micromamba, WSL2): nextflow, nf-core/fetchngs, nf-core/scrnaseq
+# Used by: fasterq_dump, cellranger_count, starsolo, nfcore_scrnaseq
+# NOTE: Not pip-installable. Managed entirely via micromamba + Nextflow.
+# DISABLED by default per cardinal rule: avoid FASTQ if processed data exists.
+
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "mypy>=1.8",
+    "ruff>=0.3",
+    "pre-commit>=3.6",
+]
+
+[project.scripts]
+gse-router = "gse_router.main:cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests that require network access",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+packages = ["gse_router"]

@@ -1,0 +1,274 @@
+# GSE Router — Tool-to-Environment Mappings
+#
+# Each tool declares which micromamba/conda environment it runs in.
+# The MCP server reads this config to dispatch tool calls correctly.
+#
+# Design rules:
+#   - Small failure surface: if R breaks, Python tools still work
+#   - Lazy installation: only build envs when a dataset needs them
+#   - FASTQ/SRA is disabled by default
+
+# ---------------------------------------------------------------------------
+# Environment runner configuration
+# ---------------------------------------------------------------------------
+defaults:
+  runner: micromamba          # micromamba | conda | docker | apptainer
+  platform: auto              # auto | windows-native | wsl2 | linux
+
+# ---------------------------------------------------------------------------
+# Download accelerator configuration
+# ---------------------------------------------------------------------------
+download:
+  # Default download backend: "auto" | "aspera" | "aria2" | "httpx"
+  # "auto" selects the best available backend per file:
+  #   NCBI + >50MB → Aspera (FASP/UDP) → Aria2 → httpx
+  #   HTTP + >50MB → Aria2 (multi-thread) → httpx
+  #   Small files   → httpx (subprocess overhead not worth it)
+  backend: auto
+
+  # Aspera Connect — FASP high-speed transfer (UDP-based)
+  # Requires: IBM Aspera Connect (https://www.ibm.com/aspera/connect/)
+  # Key is auto-detected from common install paths; set explicitly if needed.
+  aspera:
+    key_path: ""             # Auto-detected from ~/.aspera/, $LOCALAPPDATA/Aspera/, etc.
+    bandwidth_limit: 300m    # -l flag: 300m, 500m, 1g
+    disable_encryption: true # -T flag: faster on trusted networks
+    resume: true             # -k 1 flag: checkpoint resume
+
+  # Aria2 — multi-threaded HTTP downloads
+  # Requires: aria2 (https://aria2.github.io/)
+  aria2:
+    max_connections: 16      # -x 16: max connections per server
+    split: 16                # -s 16: file split count
+    continue: true           # -c flag: resume partial downloads
+    min_split_size: 20M      # --min-split-size: minimum chunk size
+
+  # Mirror priority (ordered — first reachable mirror is used)
+  mirrors:
+    - ncbi                   # ftp.ncbi.nlm.nih.gov (primary, supports Aspera FASP)
+    - ebi_ae                 # EBI ArrayExpress (mirrors GEO expression data)
+    - ena                    # EBI ENA (full SRA mirror)
+    - cncb                   # CNCB / GSA — China National Bioinformation Center
+    - ddbj                   # DDBJ / DRA — Japan (supports Aspera + high-speed FTP)
+
+  # Mirror base URLs (override defaults if needed)
+  mirror_urls:
+    ebi_ae: "https://www.ebi.ac.uk/arrayexpress/files"
+    ena: "https://www.ebi.ac.uk/ena"
+    cncb: "https://ngdc.cncb.ac.cn"
+    ddbj: "https://ddbj.nig.ac.jp/public"
+
+  # Timeout settings (seconds)
+  timeouts:
+    listing: 30              # Directory listing timeout
+    download: 600            # Per-file download timeout (httpx fallback)
+    mirror_health_check: 10  # Mirror HEAD request timeout
+
+  # Maximum download file size in MB. Files larger than this are skipped.
+  # Set to 0 for unlimited. Env override: GSE_ROUTER_MAX_DOWNLOAD_SIZE_MB.
+  max_download_size_mb: 500
+
+# ---------------------------------------------------------------------------
+# Router-core tools (always available, lightweight)
+# ---------------------------------------------------------------------------
+router_core:
+  env: router-core
+  enabled: true
+  packages:
+    - python>=3.11
+    - pydantic
+    - httpx
+    - pandas
+    - beautifulsoup4
+    - lxml
+    - click
+    - structlog
+    - jsonschema
+  tools:
+    fetch_geo_metadata:
+      description: "Query GEO/GSM pages and return structured StudyContext JSON"
+      command: "micromamba run -n router-core python -m gse_router_mcp.tools.geo_metadata fetch"
+      timeout: 120000
+
+    list_geo_supplementary:
+      description: "List supplementary files for a GSE accession (FTP index, mirrors supported)"
+      command: "micromamba run -n router-core python -m gse_router_mcp.tools.geo_metadata list-supplementary"
+      timeout: 90000
+
+    read_geo_filelist:
+      description: "Read and parse GEO supplementary filelist.txt before downloading"
+      command: "micromamba run -n router-core python -m gse_router_mcp.tools.geo_metadata read-filelist"
+      timeout: 90000
+
+    check_mirrors:
+      description: "Check reachability of GEO/SRA mirror sites before downloading"
+      command: "micromamba run -n router-core python -m gse_router_mcp.tools.geo_metadata check-mirrors"
+      timeout: 60000
+
+    probe_local_directory:
+      description: "Recursively probe a directory, detect file formats via magic bytes and headers"
+      command: "micromamba run -n router-core python -m gse_router_mcp.tools.file_probe probe"
+      timeout: 300000
+
+    write_file_sidecars:
+      description: "Write per-file JSON sidecars for all files in a directory"
+      command: "micromamba run -n router-core python -m gse_router_mcp.tools.file_probe write-sidecars"
+      timeout: 300000
+
+    classify_scrna_files:
+      description: "Classify probed files into scRNA-seq types (10x MEX, h5ad, loom, FASTQ, etc.)"
+      command: "micromamba run -n router-core python -m gse_router_mcp.tools.classifier classify"
+      timeout: 60000
+
+    group_related_files:
+      description: "Group related files: MEX triplets, FASTQ pairs, standalone objects"
+      command: "micromamba run -n router-core python -m gse_router_mcp.tools.classifier group"
+      timeout: 60000
+
+    build_dataset_manifest:
+      description: "Combine sidecars + study context into a DatasetManifest JSON"
+      command: "micromamba run -n router-core python -m gse_router_mcp.tools.classifier build-manifest"
+      timeout: 60000
+
+    plan_route:
+      description: "Apply routing rules to manifest, produce an ordered RoutePlan"
+      command: "micromamba run -n router-core python -m gse_router.tools.route_planner plan"
+      timeout: 120000
+
+    write_processing_report:
+      description: "Generate final ProcessingReport JSON from manifest + plan + outputs"
+      command: "micromamba run -n router-core python -m gse_router.tools.report write"
+      timeout: 60000
+
+# ---------------------------------------------------------------------------
+# scrna-python tools (processed data conversion)
+# ---------------------------------------------------------------------------
+scrna_python:
+  env: scrna-python
+  enabled: true
+  packages:
+    - python>=3.10
+    - scanpy
+    - anndata
+    - scipy
+    - numpy
+    - pandas
+    - h5py
+    - loompy
+  tools:
+    convert_10x_mtx_to_h5ad:
+      description: "Convert 10x MEX triplet (matrix.mtx + barcodes.tsv + features.tsv) to h5ad"
+      command: "micromamba run -n scrna-python python -m gse_router.tools.converters convert-10x-mtx"
+      timeout: 600000
+
+    convert_10x_h5_to_h5ad:
+      description: "Convert 10x HDF5 (.h5) to h5ad via scanpy.read_10x_h5"
+      command: "micromamba run -n scrna-python python -m gse_router.tools.converters convert-10x-h5"
+      timeout: 600000
+
+    convert_loom_to_h5ad:
+      description: "Convert .loom / .loom.gz to h5ad via scanpy.read_loom"
+      command: "micromamba run -n scrna-python python -m gse_router.tools.converters convert-loom"
+      timeout: 600000
+
+    read_h5ad_validate:
+      description: "Read existing .h5ad, validate schema, standardize structure"
+      command: "micromamba run -n scrna-python python -m gse_router.tools.converters read-h5ad"
+      timeout: 300000
+
+    convert_raw_umi_matrix_to_h5ad:
+      description: "Parse raw UMI count matrix (TXT/CSV/TSV) and convert to h5ad"
+      command: "micromamba run -n scrna-python python -m gse_router.tools.converters convert-raw-umi"
+      timeout: 600000
+
+    convert_normalized_matrix_to_h5ad:
+      description: "Parse normalized matrix (TPM/FPKM/log) — stores in layers['normalized'], marks limited-use"
+      command: "micromamba run -n scrna-python python -m gse_router.tools.converters convert-normalized"
+      timeout: 600000
+
+    convert_csv_matrix_to_h5ad:
+      description: "Parse ambiguous CSV/TSV count matrix with gene/cell orientation inference"
+      command: "micromamba run -n scrna-python python -m gse_router.tools.converters convert-csv"
+      timeout: 600000
+
+    validate_h5ad:
+      description: "Run QC checks on h5ad: cell/gene counts, MT%, raw counts verification"
+      command: "micromamba run -n scrna-python python -m gse_router.tools.validators validate"
+      timeout: 300000
+
+    merge_cell_metadata:
+      description: "Merge cell-level metadata CSV/TSV into AnnData.obs"
+      command: "micromamba run -n scrna-python python -m gse_router.tools.metadata_tools merge-cells"
+      timeout: 300000
+
+    merge_gene_metadata:
+      description: "Merge gene annotation into AnnData.var"
+      command: "micromamba run -n scrna-python python -m gse_router.tools.metadata_tools merge-genes"
+      timeout: 300000
+
+# ---------------------------------------------------------------------------
+# r-converters (Seurat/SCE RDS → h5ad)
+# Enabled only when .rds files are detected
+# ---------------------------------------------------------------------------
+r_converters:
+  env: r-converters
+  enabled: false               # Lazy: only enable when RDS is in the dataset
+  platform: wsl2               # R/Seurat runs much smoother on Linux
+  packages:
+    - r-base>=4.3
+    - r-seurat
+    - r-seuratdisk
+    - r-singlecellexperiment
+    - r-zellkonverter
+  tools:
+    convert_rds_seurat_to_h5ad:
+      description: "Convert Seurat .rds to .h5ad via SeuratDisk"
+      command: "micromamba run -n r-converters Rscript tools/convert_seurat_rds.R"
+      timeout: 1200000
+
+    convert_rds_sce_to_h5ad:
+      description: "Convert SingleCellExperiment .rds to .h5ad via zellkonverter"
+      command: "micromamba run -n r-converters Rscript tools/convert_sce_rds.R"
+      timeout: 1200000
+
+    convert_h5seurat_to_h5ad:
+      description: "Convert .h5seurat to .h5ad via SeuratDisk"
+      command: "micromamba run -n r-converters Rscript tools/convert_h5seurat.R"
+      timeout: 600000
+
+# ---------------------------------------------------------------------------
+# raw-pipeline (FASTQ/SRA → counts)
+# DISABLED by default — only as last resort when no processed data exists
+# ---------------------------------------------------------------------------
+raw_pipeline:
+  env: raw-pipeline
+  enabled: false               # Cardinal rule: avoid FASTQ if processed data exists
+  platform: wsl2               # Nextflow/Cell Ranger/STARsolo need Linux
+  packages:
+    - nextflow>=24.0
+    - nf-core
+  tools:
+    fetchngs_download:
+      description: "Download FASTQ from SRA/ENA via nf-core/fetchngs"
+      command: "micromamba run -n raw-pipeline nextflow run nf-core/fetchngs ..."
+      timeout: 3600000
+
+    fasterq_dump:
+      description: "Convert SRA to FASTQ via SRA Toolkit fasterq-dump"
+      command: "micromamba run -n raw-pipeline fasterq-dump ..."
+      timeout: 3600000
+
+    cellranger_count:
+      description: "Run Cell Ranger count on 10x FASTQ data"
+      command: "micromamba run -n raw-pipeline cellranger count ..."
+      timeout: 86400000
+
+    starsolo:
+      description: "Run STARsolo on single-end or paired-end FASTQ"
+      command: "micromamba run -n raw-pipeline STARsolo ..."
+      timeout: 86400000
+
+    scrnaseq_pipeline:
+      description: "Run full nf-core/scrnaseq pipeline"
+      command: "micromamba run -n raw-pipeline nextflow run nf-core/scrnaseq ..."
+      timeout: 86400000

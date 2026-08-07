@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "gse-router": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["gse_router_mcp/server.py"],
+      "timeout": 600000,
+      "env": {
+        "PYTHONPATH": "src"
+      }
+    }
+  }
+}

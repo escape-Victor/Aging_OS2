@@ -1,0 +1,77 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+*.egg-info
+dist/
+build/
+*.egg
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+.tox/
+
+# Test artifacts (batch runs, probes, logs)
+*.jsonl
+*.log
+batch_evaluation.json
+GSE_single_cell_RNAseq_*.txt
+IMPLEMENTATION_PLAN.md
+probe_datasets.py
+probe_datasets2.py
+probe_final.py
+
+# Ruff
+.ruff_cache/
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+
+# Aider AI
+.aider*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project-specific
+output/
+data/*/
+!data/geo_metadata_dumps/
+*.h5ad
+*.h5
+*.loom
+*.soft.gz
+*.soft
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Mypy
+.mypy_cache/
+
+# micromamba / conda envs (not in repo)
+micromamba/
+envs/
+
+# Claude plans
+.claude/plans/
